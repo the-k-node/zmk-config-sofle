@@ -77,6 +77,8 @@ static void draw_bitmap_to_buffer(const uint8_t *src, int src_w, int src_h,
 
 static uint32_t step_counter = 0;
 static lv_obj_t *img_widget = NULL;
+static lv_obj_t *layer_label = NULL;
+static lv_obj_t *battery_label = NULL;
 
 static const char *get_active_layer_name(void) {
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
@@ -94,6 +96,14 @@ static const char *get_active_layer_name(void) {
     }
 #else
     return "PERIPHERAL";
+#endif
+}
+
+static uint8_t get_battery_level(void) {
+#if __has_include(<zmk/battery.h>)
+    return zmk_battery_state_of_charge();
+#else
+    return 100;
 #endif
 }
 
@@ -139,11 +149,27 @@ static void anim_timer_cb(lv_timer_t *timer) {
     if (img_widget != NULL) {
         lv_obj_invalidate(img_widget);
     }
+
+    /* Update labels */
+    if (layer_label != NULL) {
+        lv_label_set_text(layer_label, get_active_layer_name());
+    }
+
+    if (battery_label != NULL) {
+        /* Only update battery every few ticks to save CPU */
+        if (step_counter % 10 == 0) {
+            char bat_buf[16];
+            snprintf(bat_buf, sizeof(bat_buf), "BAT %d%%", get_battery_level());
+            lv_label_set_text(battery_label, bat_buf);
+        }
+    }
 }
 
 static void screen_delete_cb(lv_event_t * e) {
-    /* When ZMK destroys the screen (e.g. going to sleep), prevent dangling pointer */
+    /* When ZMK destroys the screen (e.g. going to sleep), prevent dangling pointers */
     img_widget = NULL;
+    layer_label = NULL;
+    battery_label = NULL;
 }
 
 lv_obj_t *zmk_display_status_screen(void) {
@@ -166,10 +192,16 @@ lv_obj_t *zmk_display_status_screen(void) {
     /* Attach a deletion handler to prevent crash on sleep */
     lv_obj_add_event_cb(screen, screen_delete_cb, LV_EVENT_DELETE, NULL);
 
-    lv_obj_t *label = lv_label_create(screen);
-    lv_label_set_text(label, get_active_layer_name());
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 2, 0);
+    layer_label = lv_label_create(screen);
+    lv_label_set_text(layer_label, get_active_layer_name());
+    lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
     
+    battery_label = lv_label_create(screen);
+    char bat_buf[16];
+    snprintf(bat_buf, sizeof(bat_buf), "BAT %d%%", get_battery_level());
+    lv_label_set_text(battery_label, bat_buf);
+    lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -2, 0);
+
     /* Only create the timer once, or if it was destroyed */
     static lv_timer_t * anim_timer = NULL;
     if (anim_timer == NULL) {
