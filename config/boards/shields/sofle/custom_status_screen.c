@@ -175,8 +175,9 @@ static void anim_timer_cb(lv_timer_t *timer) {
     decode_vertical_to_indexed1bit(sprite_frame, 32, 22, luna_x, luna_y);
 #endif
 
-    /* Redraw animation frame */
-    lv_img_set_src(img_widget, &frame_dsc);
+    /* Force LVGL image cache invalidation and redraw of updated frame buffer */
+    lv_img_cache_invalidate_src(&frame_dsc);
+    lv_obj_invalidate(img_widget);
 
     /* Update Layer Name widget */
     if (layer_label) {
