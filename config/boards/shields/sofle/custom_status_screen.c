@@ -211,12 +211,16 @@ lv_obj_t *zmk_display_status_screen(void) {
 
     /* Text labels that are guaranteed not to cause missing font boxes */
     layer_label = lv_label_create(screen);
-    lv_label_set_text(layer_label, get_active_layer_name());
-    lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
+    if (layer_label != NULL) {
+        lv_label_set_text(layer_label, get_active_layer_name());
+        lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
+    }
 
     battery_label = lv_label_create(screen);
-    set_battery_label_text(battery_label, get_battery_level());
-    lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -2, 0);
+    if (battery_label != NULL) {
+        set_battery_label_text(battery_label, get_battery_level());
+        lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -2, 0);
+    }
 
     /* Only create the timer once, or if it was destroyed */
     static lv_timer_t * anim_timer = NULL;
