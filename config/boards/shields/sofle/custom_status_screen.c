@@ -30,20 +30,20 @@
 #define ANIM_FRAME_DURATION_MS 180
 
 /* ── Frame buffer for decoded horizontal-scan bitmap ───────────────── */
-/* LVGL ALPHA_1BIT format requires no palette, just 1 bit per pixel */
 #define HBUF_STRIDE ((DISPLAY_WIDTH + 7) / 8)
 #define HBUF_DATA_SIZE (HBUF_STRIDE * DISPLAY_HEIGHT)
+#define HBUF_TOTAL_SIZE (8 + HBUF_DATA_SIZE)
 
-static uint8_t frame_buf[HBUF_DATA_SIZE];
+static uint8_t frame_buf[HBUF_TOTAL_SIZE];
 
 /* ── LVGL image descriptor ─────────────────────────────────────────── */
 static lv_img_dsc_t frame_dsc = {
-    .header.cf = LV_IMG_CF_ALPHA_1BIT,
+    .header.cf = LV_IMG_CF_INDEXED_1BIT,
     .header.always_zero = 0,
     .header.reserved = 0,
     .header.w = DISPLAY_WIDTH,
     .header.h = DISPLAY_HEIGHT,
-    .data_size = HBUF_DATA_SIZE,
+    .data_size = HBUF_TOTAL_SIZE,
     .data = frame_buf,
 };
 
@@ -54,18 +54,19 @@ static lv_obj_t *layer_label = NULL;
 static lv_obj_t *battery_label = NULL;
 
 /*
- * Convert a vertical-scan QMK bitmap into LVGL ALPHA_1BIT format.
- * 
- * 0 = Transparent (shows screen background)
- * 1 = Opaque (draws character in theme text color)
+ * Convert a vertical-scan QMK bitmap into LVGL INDEXED_1BIT format.
  */
-static void decode_vertical_to_alpha1bit(const uint8_t *src, int src_w, int src_h,
-                                         int dst_offset_x, int dst_offset_y) {
-    /* Clear frame buffer to 0 (all transparent) */
-    memset(frame_buf, 0, HBUF_DATA_SIZE);
+static void decode_vertical_to_indexed1bit(const uint8_t *src, int src_w, int src_h,
+                                           int dst_offset_x, int dst_offset_y) {
+    /* Fill with 0xFF (1s) -> Dark background on inverted OLED */
+    memset(frame_buf, 0xFF, HBUF_TOTAL_SIZE);
+    
+    /* Standard palette */
+    frame_buf[0] = 0x00; frame_buf[1] = 0x00; frame_buf[2] = 0x00; frame_buf[3] = 0xFF;
+    frame_buf[4] = 0xFF; frame_buf[5] = 0xFF; frame_buf[6] = 0xFF; frame_buf[7] = 0xFF;
 
     int src_pages = (src_h + 7) / 8;
-    uint8_t *bmp = frame_buf;
+    uint8_t *bmp = &frame_buf[8];
 
     for (int page = 0; page < src_pages; page++) {
         for (int col = 0; col < src_w; col++) {
@@ -74,7 +75,7 @@ static void decode_vertical_to_alpha1bit(const uint8_t *src, int src_w, int src_
                 int src_y = page * 8 + bit;
                 if (src_y >= src_h) break;
 
-                if (!(byte_val & (1 << bit))) continue; /* pixel off (transparent) */
+                if (!(byte_val & (1 << bit))) continue;
 
                 int px_x = dst_offset_x + col;
                 int px_y = dst_offset_y + src_y;
@@ -83,10 +84,10 @@ static void decode_vertical_to_alpha1bit(const uint8_t *src, int src_w, int src_
                     px_y < 0 || px_y >= DISPLAY_HEIGHT)
                     continue;
 
-                /* Set bit to 1 (opaque / lit pixel) */
+                /* Clear to 0 -> Lit pixel on inverted OLED */
                 int byte_offset = px_y * HBUF_STRIDE + (px_x / 8);
-                int bit_pos = 7 - (px_x % 8);  /* MSB first */
-                bmp[byte_offset] |= (1 << bit_pos);
+                int bit_pos = 7 - (px_x % 8);
+                bmp[byte_offset] &= ~(1 << bit_pos);
             }
         }
     }
@@ -127,26 +128,18 @@ static void anim_timer_cb(lv_timer_t *timer) {
     step_counter++;
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    /* ── LEFT SIDE: Bongo Cat Animation ───────────────────────────── */
     uint32_t phase = step_counter % 28;
 
     if (phase < 15) {
-        /* Paw tapping animation */
         uint8_t tap_idx = phase % 2;
-        decode_vertical_to_alpha1bit(bongo_tap[tap_idx],
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+        decode_vertical_to_indexed1bit(bongo_tap[tap_idx], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else if (phase < 25) {
-        /* Idle looking around */
         uint8_t idle_idx = (phase - 15) % 5;
-        decode_vertical_to_alpha1bit(bongo_idle[idle_idx],
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+        decode_vertical_to_indexed1bit(bongo_idle[idle_idx], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else {
-        /* Ready stance */
-        decode_vertical_to_alpha1bit(bongo_prep,
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+        decode_vertical_to_indexed1bit(bongo_prep, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     }
 #else
-    /* ── RIGHT SIDE: Luna Pet Animation ───────────────────────────── */
     uint32_t phase = step_counter % 56;
     const uint8_t *sprite_frame;
 
@@ -165,19 +158,18 @@ static void anim_timer_cb(lv_timer_t *timer) {
     int luna_x = (DISPLAY_WIDTH - 32) / 2;
     int luna_y = DISPLAY_HEIGHT - 22;
 
-    decode_vertical_to_alpha1bit(sprite_frame, 32, 22, luna_x, luna_y);
+    decode_vertical_to_indexed1bit(sprite_frame, 32, 22, luna_x, luna_y);
 #endif
 
-    /* Force LVGL image cache invalidation and redraw of updated frame buffer */
+    /* Force LVGL image cache invalidation and redraw */
     lv_img_cache_invalidate_src(&frame_dsc);
-    lv_obj_invalidate(img_widget);
+    lv_img_set_src(img_widget, NULL);
+    lv_img_set_src(img_widget, &frame_dsc);
 
-    /* Update Layer Name widget */
     if (layer_label) {
         lv_label_set_text(layer_label, get_active_layer_name());
     }
 
-    /* Update Battery Status widget */
     if (battery_label) {
         char bat_buf[16];
         snprintf(bat_buf, sizeof(bat_buf), "BAT %d%%", get_battery_level());
@@ -188,41 +180,31 @@ static void anim_timer_cb(lv_timer_t *timer) {
 /* ── ZMK Display Entry Point ───────────────────────────────────────── */
 lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
-    
-    /* We DO NOT set background or text colors explicitly.
-     * We let the ZMK LVGL theme handle the colors natively to avoid OLED inversion conflicts. */
 
-    /* Initial frame decode */
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    decode_vertical_to_alpha1bit(bongo_tap[0],
-                                 DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+    decode_vertical_to_indexed1bit(bongo_tap[0], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
 #else
     {
         int luna_x = (DISPLAY_WIDTH - 32) / 2;
         int luna_y = DISPLAY_HEIGHT - 22;
-        decode_vertical_to_alpha1bit(luna_sit[0], 32, 22, luna_x, luna_y);
+        decode_vertical_to_indexed1bit(luna_sit[0], 32, 22, luna_x, luna_y);
     }
 #endif
 
-    /* 1. Base Image Widget for Animation */
     img_widget = lv_img_create(screen);
     lv_img_set_src(img_widget, &frame_dsc);
     lv_obj_align(img_widget, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    /* 2. Layer Name Widget (Top Left) */
     layer_label = lv_label_create(screen);
     lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
     lv_label_set_text(layer_label, get_active_layer_name());
 
-    /* 3. Battery Status Widget (Top Right) */
     battery_label = lv_label_create(screen);
     lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -2, 0);
-
     char bat_buf[16];
     snprintf(bat_buf, sizeof(bat_buf), "BAT %d%%", get_battery_level());
     lv_label_set_text(battery_label, bat_buf);
 
-    /* Start animation & widget refresh timer */
     lv_timer_create(anim_timer_cb, ANIM_FRAME_DURATION_MS, NULL);
 
     return screen;
