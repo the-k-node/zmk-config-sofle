@@ -2,56 +2,185 @@
  * Copyright (c) 2020 The ZMK Contributors
  * SPDX-License-Identifier: MIT
  *
- * Simple custom status screen with static Bongo Cat graphic.
- * Works on both central and peripheral halves of a split keyboard.
+ * Custom OLED status screen with rich animations:
+ *  - Left Half (Central): Bongo Cat tapping paws on desk & looking around
+ *  - Right Half (Peripheral): Luna Pet cycling between Sitting, Walking, Barking, Running & Sneaking
+ *
+ * Uses LVGL image widget with INDEXED_1BIT format + timer to swap frames.
+ * No ZMK event dependencies — compiles cleanly on both central and peripheral halves.
  */
 
 #include <zephyr/kernel.h>
 #include <zmk/display.h>
 #include <lvgl.h>
 
-/* Bongo Cat 128x16 pixel art bitmap */
-static const uint8_t bongo_cat_bits[] = {
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x66, 0x00, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0xc2, 0xff, 0xff, 0xff, 0xff, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x81, 0x00, 0x00, 0x00, 0x00, 0x81, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x81, 0x38, 0x00, 0x00, 0x1c, 0x81, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x81, 0x00, 0x00, 0x00, 0x00, 0x81, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0xc1, 0x10, 0x80, 0x01, 0x08, 0x83, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x61, 0x08, 0x40, 0x02, 0x10, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x39, 0x00, 0x20, 0x04, 0x00, 0x9c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x0f, 0x00, 0x1f, 0xf8, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x03, 0xe0, 0x00, 0x00, 0x07, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-};
+#include "bongo_cat.h"
+#include "luna.h"
 
-static const lv_img_dsc_t bongo_cat_img = {
-    .header.cf = LV_IMG_CF_ALPHA_1BIT,
+/* ── Display Constants ─────────────────────────────────────────────── */
+#define DISPLAY_WIDTH  128
+#define DISPLAY_HEIGHT 32
+
+/* ── Animation Timing ──────────────────────────────────────────────── */
+#define ANIM_FRAME_DURATION_MS 180
+
+/* ── Frame buffer for decoded horizontal-scan bitmap ───────────────── */
+/* LVGL INDEXED_1BIT format: 8-byte palette + ceil(W/8) * H bytes */
+#define HBUF_STRIDE ((DISPLAY_WIDTH + 7) / 8)
+#define HBUF_DATA_SIZE (HBUF_STRIDE * DISPLAY_HEIGHT)
+#define HBUF_TOTAL_SIZE (8 + HBUF_DATA_SIZE)  /* 8-byte palette + bitmap */
+
+static uint8_t frame_buf[HBUF_TOTAL_SIZE];
+
+/* ── LVGL image descriptor (updated each frame) ───────────────────── */
+static lv_img_dsc_t frame_dsc = {
+    .header.cf = LV_IMG_CF_INDEXED_1BIT,
     .header.always_zero = 0,
     .header.reserved = 0,
-    .header.w = 128,
-    .header.h = 16,
-    .data_size = sizeof(bongo_cat_bits),
-    .data = bongo_cat_bits,
+    .header.w = DISPLAY_WIDTH,
+    .header.h = DISPLAY_HEIGHT,
+    .data_size = HBUF_TOTAL_SIZE,
+    .data = frame_buf,
 };
 
+/* ── Animation State ───────────────────────────────────────────────── */
+static uint32_t step_counter = 0;
+static lv_obj_t *img_widget = NULL;
+
+/*
+ * Convert a vertical-scan QMK bitmap into LVGL INDEXED_1BIT format.
+ *
+ * QMK vertical scan: column-major, each byte = 8 vertical pixels (LSB=top)
+ *   byte_index = col + page * src_w;  pixel(col, page*8+bit) = byte & (1<<bit)
+ *
+ * LVGL INDEXED_1BIT: row-major, MSB-first, 8-byte palette prefix
+ *   Palette bytes 0-3 = color0 (black), bytes 4-7 = color1 (white)
+ *   Then row-major bitmap: bit 7 of first byte = leftmost pixel
+ */
+static void decode_vertical_to_indexed1bit(const uint8_t *src, int src_w, int src_h,
+                                           int dst_offset_x, int dst_offset_y) {
+    /* Clear frame buffer to 0 (black) */
+    memset(frame_buf, 0, HBUF_TOTAL_SIZE);
+
+    /* Set up palette: index 0 = black, index 1 = white */
+    frame_buf[0] = 0x00; frame_buf[1] = 0x00; frame_buf[2] = 0x00; frame_buf[3] = 0xFF;  /* black */
+    frame_buf[4] = 0xFF; frame_buf[5] = 0xFF; frame_buf[6] = 0xFF; frame_buf[7] = 0xFF;  /* white */
+
+    int src_pages = (src_h + 7) / 8;
+    uint8_t *bmp = &frame_buf[8]; /* skip palette */
+
+    for (int page = 0; page < src_pages; page++) {
+        for (int col = 0; col < src_w; col++) {
+            uint8_t byte_val = src[col + page * src_w];
+            for (int bit = 0; bit < 8; bit++) {
+                int src_y = page * 8 + bit;
+                if (src_y >= src_h) break;
+
+                if (!(byte_val & (1 << bit))) continue; /* pixel off */
+
+                int px_x = dst_offset_x + col;
+                int px_y = dst_offset_y + src_y;
+
+                if (px_x < 0 || px_x >= DISPLAY_WIDTH ||
+                    px_y < 0 || px_y >= DISPLAY_HEIGHT)
+                    continue;
+
+                /* Set pixel in horizontal row-major, MSB-first format */
+                int byte_offset = px_y * HBUF_STRIDE + (px_x / 8);
+                int bit_pos = 7 - (px_x % 8);  /* MSB first */
+                bmp[byte_offset] |= (1 << bit_pos);
+            }
+        }
+    }
+}
+
+/* ── Animation timer callback ──────────────────────────────────────── */
+static void anim_timer_cb(lv_timer_t *timer) {
+    (void)timer;
+    step_counter++;
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    /* ── LEFT SIDE: Bongo Cat ───────────────────────────────────────────
+     * Sequence:
+     *   Steps 0..14  (15 ticks): Paw tapping (alternating left & right paw)
+     *   Steps 15..24 (10 ticks): Idle & looking around (cycling idle 0..4)
+     *   Steps 25..27 (3 ticks) : Prep stance
+     */
+    uint32_t phase = step_counter % 28;
+
+    if (phase < 15) {
+        /* Paw tapping animation */
+        uint8_t tap_idx = phase % 2;
+        decode_vertical_to_indexed1bit(bongo_tap[tap_idx],
+                                       DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+    } else if (phase < 25) {
+        /* Idle looking around */
+        uint8_t idle_idx = (phase - 15) % 5;
+        decode_vertical_to_indexed1bit(bongo_idle[idle_idx],
+                                       DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+    } else {
+        /* Ready / Prep stance */
+        decode_vertical_to_indexed1bit(bongo_prep,
+                                       DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+    }
+#else
+    /* ── RIGHT SIDE: Luna Pet ───────────────────────────────────────────
+     * Luna sprite is 32x22 pixels.
+     * Sequence:
+     *   Steps 0..11  (12 ticks): Sitting
+     *   Steps 12..23 (12 ticks): Walking
+     *   Steps 24..31 (8 ticks) : Barking
+     *   Steps 32..43 (12 ticks): Running
+     *   Steps 44..55 (12 ticks): Sneaking
+     */
+    uint32_t phase = step_counter % 56;
+    const uint8_t *sprite_frame;
+
+    if (phase < 12) {
+        sprite_frame = luna_sit[phase % 2];
+    } else if (phase < 24) {
+        sprite_frame = luna_walk[(phase - 12) % 2];
+    } else if (phase < 32) {
+        sprite_frame = luna_bark[(phase - 24) % 2];
+    } else if (phase < 44) {
+        sprite_frame = luna_run[(phase - 32) % 2];
+    } else {
+        sprite_frame = luna_sneak[(phase - 44) % 2];
+    }
+
+    int luna_x = (DISPLAY_WIDTH - 32) / 2;
+    int luna_y = DISPLAY_HEIGHT - 22;
+
+    decode_vertical_to_indexed1bit(sprite_frame, 32, 22, luna_x, luna_y);
+#endif
+
+    /* Force LVGL to redraw the image widget */
+    lv_img_set_src(img_widget, &frame_dsc);
+}
+
+/* ── ZMK Display Entry Point ───────────────────────────────────────── */
 lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
 
-    /* Title label */
-    lv_obj_t *title = lv_label_create(screen);
-    lv_label_set_text(title, "SOFLE");
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
+    /* Render initial frame */
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    decode_vertical_to_indexed1bit(bongo_tap[0],
+                                   DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+#else
+    {
+        int luna_x = (DISPLAY_WIDTH - 32) / 2;
+        int luna_y = DISPLAY_HEIGHT - 22;
+        decode_vertical_to_indexed1bit(luna_sit[0], 32, 22, luna_x, luna_y);
+    }
+#endif
 
-    /* Bongo Cat image at bottom */
-    lv_obj_t *bongo_obj = lv_img_create(screen);
-    lv_img_set_src(bongo_obj, &bongo_cat_img);
-    lv_obj_align(bongo_obj, LV_ALIGN_BOTTOM_MID, 0, 0);
+    /* Create full-screen image widget to display animated frames */
+    img_widget = lv_img_create(screen);
+    lv_img_set_src(img_widget, &frame_dsc);
+    lv_obj_align(img_widget, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    /* Start animation timer at ~180ms intervals */
+    lv_timer_create(anim_timer_cb, ANIM_FRAME_DURATION_MS, NULL);
 
     return screen;
 }
