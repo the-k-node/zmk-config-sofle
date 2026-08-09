@@ -58,18 +58,23 @@ static lv_obj_t *battery_label = NULL;
 /*
  * Convert a vertical-scan QMK bitmap into LVGL INDEXED_1BIT format.
  *
- * SWAPPED PALETTE FOR LOW POWER (PITCH BLACK BACKGROUND):
- *   Index 0 (background bits = 0) -> 0xFF (White in LVGL -> BLACK on inverted OLED)
- *   Index 1 (character bits = 1)  -> 0x00 (Black in LVGL -> WHITE on inverted OLED)
+ * NOTE ON OLED INVERSION: 
+ * The display uses `inversion-on` in the device tree, meaning:
+ *   Bit 0 = ON / Lit pixel
+ *   Bit 1 = OFF / Dark background
+ * 
+ * Therefore, we fill the buffer with 1s (0xFF) for a dark background,
+ * and clear bits to 0 for lit character outlines.
  */
 static void decode_vertical_to_indexed1bit(const uint8_t *src, int src_w, int src_h,
                                            int dst_offset_x, int dst_offset_y) {
-    /* Clear frame buffer to 0 (all pixels set to background index 0) */
-    memset(frame_buf, 0, HBUF_TOTAL_SIZE);
+    /* Fill frame buffer with 1s (0xFF) so background is OFF/Dark */
+    memset(frame_buf, 0xFF, HBUF_TOTAL_SIZE);
 
-    /* Swapped palette for OLED low-power mode (0=OFF/Black on inverted screen, 1=ON/White) */
-    frame_buf[0] = 0xFF; frame_buf[1] = 0xFF; frame_buf[2] = 0xFF; frame_buf[3] = 0xFF;  /* Index 0 = Black on screen */
-    frame_buf[4] = 0x00; frame_buf[5] = 0x00; frame_buf[6] = 0x00; frame_buf[7] = 0xFF;  /* Index 1 = White on screen */
+    /* The palette bytes are likely ignored by the 1-bit Zephyr driver, 
+       but we set them conventionally just in case. */
+    frame_buf[0] = 0x00; frame_buf[1] = 0x00; frame_buf[2] = 0x00; frame_buf[3] = 0xFF;
+    frame_buf[4] = 0xFF; frame_buf[5] = 0xFF; frame_buf[6] = 0xFF; frame_buf[7] = 0xFF;
 
     int src_pages = (src_h + 7) / 8;
     uint8_t *bmp = &frame_buf[8]; /* skip 8-byte palette header */
@@ -90,10 +95,10 @@ static void decode_vertical_to_indexed1bit(const uint8_t *src, int src_w, int sr
                     px_y < 0 || px_y >= DISPLAY_HEIGHT)
                     continue;
 
-                /* Set bit to 1 (character outline / lit pixel) */
+                /* Clear bit to 0 (character outline / lit pixel) */
                 int byte_offset = px_y * HBUF_STRIDE + (px_x / 8);
                 int bit_pos = 7 - (px_x % 8);  /* MSB first */
-                bmp[byte_offset] |= (1 << bit_pos);
+                bmp[byte_offset] &= ~(1 << bit_pos);
             }
         }
     }
@@ -195,7 +200,8 @@ static void anim_timer_cb(lv_timer_t *timer) {
 /* ── ZMK Display Entry Point ───────────────────────────────────────── */
 lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
+    /* lv_color_white() evaluates to 1, which the hardware inverts to OFF (Dark) */
+    lv_obj_set_style_bg_color(screen, lv_color_white(), 0);
 
     /* Initial frame decode */
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
@@ -216,14 +222,15 @@ lv_obj_t *zmk_display_status_screen(void) {
 
     /* 2. Layer Name Widget (Top Left) */
     layer_label = lv_label_create(screen);
-    lv_obj_set_style_text_color(layer_label, lv_color_white(), 0);
+    /* lv_color_black() evaluates to 0, which the hardware inverts to ON (Lit) */
+    lv_obj_set_style_text_color(layer_label, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(layer_label, LV_OPA_TRANSP, 0);
     lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
     lv_label_set_text(layer_label, get_active_layer_name());
 
     /* 3. Battery Status Widget (Top Right) */
     battery_label = lv_label_create(screen);
-    lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
+    lv_obj_set_style_text_color(battery_label, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(battery_label, LV_OPA_TRANSP, 0);
     lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -2, 0);
 
