@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: MIT
  *
  * Custom OLED status screen:
- *  - Low power consumption: Dark/Black background, Bright White character lines & text
  *  - Animated Bongo Cat (Left/Central) & Luna Pet (Right/Peripheral)
  *  - Active Layer Name & Battery Status widgets overlaid at the top
  */
@@ -31,21 +30,20 @@
 #define ANIM_FRAME_DURATION_MS 180
 
 /* ── Frame buffer for decoded horizontal-scan bitmap ───────────────── */
-/* LVGL INDEXED_1BIT format: 8-byte palette + ceil(W/8) * H bytes */
+/* LVGL ALPHA_1BIT format requires no palette, just 1 bit per pixel */
 #define HBUF_STRIDE ((DISPLAY_WIDTH + 7) / 8)
 #define HBUF_DATA_SIZE (HBUF_STRIDE * DISPLAY_HEIGHT)
-#define HBUF_TOTAL_SIZE (8 + HBUF_DATA_SIZE)  /* 8-byte palette + bitmap */
 
-static uint8_t frame_buf[HBUF_TOTAL_SIZE];
+static uint8_t frame_buf[HBUF_DATA_SIZE];
 
 /* ── LVGL image descriptor ─────────────────────────────────────────── */
 static lv_img_dsc_t frame_dsc = {
-    .header.cf = LV_IMG_CF_INDEXED_1BIT,
+    .header.cf = LV_IMG_CF_ALPHA_1BIT,
     .header.always_zero = 0,
     .header.reserved = 0,
     .header.w = DISPLAY_WIDTH,
     .header.h = DISPLAY_HEIGHT,
-    .data_size = HBUF_TOTAL_SIZE,
+    .data_size = HBUF_DATA_SIZE,
     .data = frame_buf,
 };
 
@@ -56,28 +54,18 @@ static lv_obj_t *layer_label = NULL;
 static lv_obj_t *battery_label = NULL;
 
 /*
- * Convert a vertical-scan QMK bitmap into LVGL INDEXED_1BIT format.
- *
- * NOTE ON OLED INVERSION: 
- * The display uses `inversion-on` in the device tree, meaning:
- *   Bit 0 = ON / Lit pixel
- *   Bit 1 = OFF / Dark background
+ * Convert a vertical-scan QMK bitmap into LVGL ALPHA_1BIT format.
  * 
- * Therefore, we fill the buffer with 1s (0xFF) for a dark background,
- * and clear bits to 0 for lit character outlines.
+ * 0 = Transparent (shows screen background)
+ * 1 = Opaque (draws character in theme text color)
  */
-static void decode_vertical_to_indexed1bit(const uint8_t *src, int src_w, int src_h,
-                                           int dst_offset_x, int dst_offset_y) {
-    /* Fill frame buffer with 1s (0xFF) so background is OFF/Dark */
-    memset(frame_buf, 0xFF, HBUF_TOTAL_SIZE);
-
-    /* The palette bytes are likely ignored by the 1-bit Zephyr driver, 
-       but we set them conventionally just in case. */
-    frame_buf[0] = 0x00; frame_buf[1] = 0x00; frame_buf[2] = 0x00; frame_buf[3] = 0xFF;
-    frame_buf[4] = 0xFF; frame_buf[5] = 0xFF; frame_buf[6] = 0xFF; frame_buf[7] = 0xFF;
+static void decode_vertical_to_alpha1bit(const uint8_t *src, int src_w, int src_h,
+                                         int dst_offset_x, int dst_offset_y) {
+    /* Clear frame buffer to 0 (all transparent) */
+    memset(frame_buf, 0, HBUF_DATA_SIZE);
 
     int src_pages = (src_h + 7) / 8;
-    uint8_t *bmp = &frame_buf[8]; /* skip 8-byte palette header */
+    uint8_t *bmp = frame_buf;
 
     for (int page = 0; page < src_pages; page++) {
         for (int col = 0; col < src_w; col++) {
@@ -86,7 +74,7 @@ static void decode_vertical_to_indexed1bit(const uint8_t *src, int src_w, int sr
                 int src_y = page * 8 + bit;
                 if (src_y >= src_h) break;
 
-                if (!(byte_val & (1 << bit))) continue; /* pixel off */
+                if (!(byte_val & (1 << bit))) continue; /* pixel off (transparent) */
 
                 int px_x = dst_offset_x + col;
                 int px_y = dst_offset_y + src_y;
@@ -95,10 +83,10 @@ static void decode_vertical_to_indexed1bit(const uint8_t *src, int src_w, int sr
                     px_y < 0 || px_y >= DISPLAY_HEIGHT)
                     continue;
 
-                /* Clear bit to 0 (character outline / lit pixel) */
+                /* Set bit to 1 (opaque / lit pixel) */
                 int byte_offset = px_y * HBUF_STRIDE + (px_x / 8);
                 int bit_pos = 7 - (px_x % 8);  /* MSB first */
-                bmp[byte_offset] &= ~(1 << bit_pos);
+                bmp[byte_offset] |= (1 << bit_pos);
             }
         }
     }
@@ -145,17 +133,17 @@ static void anim_timer_cb(lv_timer_t *timer) {
     if (phase < 15) {
         /* Paw tapping animation */
         uint8_t tap_idx = phase % 2;
-        decode_vertical_to_indexed1bit(bongo_tap[tap_idx],
-                                       DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+        decode_vertical_to_alpha1bit(bongo_tap[tap_idx],
+                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else if (phase < 25) {
         /* Idle looking around */
         uint8_t idle_idx = (phase - 15) % 5;
-        decode_vertical_to_indexed1bit(bongo_idle[idle_idx],
-                                       DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+        decode_vertical_to_alpha1bit(bongo_idle[idle_idx],
+                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else {
         /* Ready stance */
-        decode_vertical_to_indexed1bit(bongo_prep,
-                                       DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+        decode_vertical_to_alpha1bit(bongo_prep,
+                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     }
 #else
     /* ── RIGHT SIDE: Luna Pet Animation ───────────────────────────── */
@@ -177,7 +165,7 @@ static void anim_timer_cb(lv_timer_t *timer) {
     int luna_x = (DISPLAY_WIDTH - 32) / 2;
     int luna_y = DISPLAY_HEIGHT - 22;
 
-    decode_vertical_to_indexed1bit(sprite_frame, 32, 22, luna_x, luna_y);
+    decode_vertical_to_alpha1bit(sprite_frame, 32, 22, luna_x, luna_y);
 #endif
 
     /* Force LVGL image cache invalidation and redraw of updated frame buffer */
@@ -200,18 +188,19 @@ static void anim_timer_cb(lv_timer_t *timer) {
 /* ── ZMK Display Entry Point ───────────────────────────────────────── */
 lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
-    /* lv_color_white() evaluates to 1, which the hardware inverts to OFF (Dark) */
-    lv_obj_set_style_bg_color(screen, lv_color_white(), 0);
+    
+    /* We DO NOT set background or text colors explicitly.
+     * We let the ZMK LVGL theme handle the colors natively to avoid OLED inversion conflicts. */
 
     /* Initial frame decode */
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    decode_vertical_to_indexed1bit(bongo_tap[0],
-                                   DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+    decode_vertical_to_alpha1bit(bongo_tap[0],
+                                 DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
 #else
     {
         int luna_x = (DISPLAY_WIDTH - 32) / 2;
         int luna_y = DISPLAY_HEIGHT - 22;
-        decode_vertical_to_indexed1bit(luna_sit[0], 32, 22, luna_x, luna_y);
+        decode_vertical_to_alpha1bit(luna_sit[0], 32, 22, luna_x, luna_y);
     }
 #endif
 
@@ -222,16 +211,11 @@ lv_obj_t *zmk_display_status_screen(void) {
 
     /* 2. Layer Name Widget (Top Left) */
     layer_label = lv_label_create(screen);
-    /* lv_color_black() evaluates to 0, which the hardware inverts to ON (Lit) */
-    lv_obj_set_style_text_color(layer_label, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(layer_label, LV_OPA_TRANSP, 0);
     lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
     lv_label_set_text(layer_label, get_active_layer_name());
 
     /* 3. Battery Status Widget (Top Right) */
     battery_label = lv_label_create(screen);
-    lv_obj_set_style_text_color(battery_label, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(battery_label, LV_OPA_TRANSP, 0);
     lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -2, 0);
 
     char bat_buf[16];
