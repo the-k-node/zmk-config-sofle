@@ -201,20 +201,16 @@ lv_obj_t *zmk_display_status_screen(void) {
     
     lv_obj_add_event_cb(screen, screen_delete_cb, LV_EVENT_DELETE, NULL);
 
-    /* Text labels with solid background to prevent overlap garbling */
+    /* Text labels without solid background to prevent white bars */
     layer_label = lv_label_create(screen);
     if (layer_label != NULL) {
         lv_label_set_text(layer_label, get_active_layer_name());
-        lv_obj_set_style_bg_color(layer_label, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(layer_label, LV_OPA_COVER, 0);
         lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
     }
 
     battery_label = lv_label_create(screen);
     if (battery_label != NULL) {
         set_battery_label_text(battery_label, get_battery_level());
-        lv_obj_set_style_bg_color(battery_label, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(battery_label, LV_OPA_COVER, 0);
         
         /* Moved down to bottom right to avoid overlapping Bongo Cat's head/arms */
         lv_obj_align(battery_label, LV_ALIGN_BOTTOM_RIGHT, -2, 0);
