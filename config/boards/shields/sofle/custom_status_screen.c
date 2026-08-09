@@ -2,17 +2,23 @@
  * Copyright (c) 2020 The ZMK Contributors
  * SPDX-License-Identifier: MIT
  *
- * Custom OLED status screen with rich animations:
- *  - Left Half (Central): Bongo Cat tapping paws on desk & looking around
- *  - Right Half (Peripheral): Luna Pet cycling between Sitting, Walking, Barking, Running & Sneaking
- *
- * Uses LVGL image widget with INDEXED_1BIT format + timer to swap frames.
- * No ZMK event dependencies — compiles cleanly on both central and peripheral halves.
+ * Custom OLED status screen:
+ *  - Low power consumption: Dark/Black background, Bright White character lines & text
+ *  - Animated Bongo Cat (Left/Central) & Luna Pet (Right/Peripheral)
+ *  - Active Layer Name & Battery Status widgets overlaid at the top
  */
 
 #include <zephyr/kernel.h>
 #include <zmk/display.h>
 #include <lvgl.h>
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#include <zmk/keymap.h>
+#endif
+
+#if __has_include(<zmk/battery.h>)
+#include <zmk/battery.h>
+#endif
 
 #include "bongo_cat.h"
 #include "luna.h"
@@ -32,7 +38,7 @@
 
 static uint8_t frame_buf[HBUF_TOTAL_SIZE];
 
-/* ── LVGL image descriptor (updated each frame) ───────────────────── */
+/* ── LVGL image descriptor ─────────────────────────────────────────── */
 static lv_img_dsc_t frame_dsc = {
     .header.cf = LV_IMG_CF_INDEXED_1BIT,
     .header.always_zero = 0,
@@ -43,31 +49,30 @@ static lv_img_dsc_t frame_dsc = {
     .data = frame_buf,
 };
 
-/* ── Animation State ───────────────────────────────────────────────── */
+/* ── UI Widgets & State ────────────────────────────────────────────── */
 static uint32_t step_counter = 0;
 static lv_obj_t *img_widget = NULL;
+static lv_obj_t *layer_label = NULL;
+static lv_obj_t *battery_label = NULL;
 
 /*
  * Convert a vertical-scan QMK bitmap into LVGL INDEXED_1BIT format.
  *
- * QMK vertical scan: column-major, each byte = 8 vertical pixels (LSB=top)
- *   byte_index = col + page * src_w;  pixel(col, page*8+bit) = byte & (1<<bit)
- *
- * LVGL INDEXED_1BIT: row-major, MSB-first, 8-byte palette prefix
- *   Palette bytes 0-3 = color0 (black), bytes 4-7 = color1 (white)
- *   Then row-major bitmap: bit 7 of first byte = leftmost pixel
+ * SWAPPED PALETTE FOR LOW POWER (PITCH BLACK BACKGROUND):
+ *   Index 0 (background bits = 0) -> 0xFF (White in LVGL -> BLACK on inverted OLED)
+ *   Index 1 (character bits = 1)  -> 0x00 (Black in LVGL -> WHITE on inverted OLED)
  */
 static void decode_vertical_to_indexed1bit(const uint8_t *src, int src_w, int src_h,
                                            int dst_offset_x, int dst_offset_y) {
-    /* Clear frame buffer to 0 (black) */
+    /* Clear frame buffer to 0 (all pixels set to background index 0) */
     memset(frame_buf, 0, HBUF_TOTAL_SIZE);
 
-    /* Set up palette: index 0 = black, index 1 = white */
-    frame_buf[0] = 0x00; frame_buf[1] = 0x00; frame_buf[2] = 0x00; frame_buf[3] = 0xFF;  /* black */
-    frame_buf[4] = 0xFF; frame_buf[5] = 0xFF; frame_buf[6] = 0xFF; frame_buf[7] = 0xFF;  /* white */
+    /* Swapped palette for OLED low-power mode (0=OFF/Black on inverted screen, 1=ON/White) */
+    frame_buf[0] = 0xFF; frame_buf[1] = 0xFF; frame_buf[2] = 0xFF; frame_buf[3] = 0xFF;  /* Index 0 = Black on screen */
+    frame_buf[4] = 0x00; frame_buf[5] = 0x00; frame_buf[6] = 0x00; frame_buf[7] = 0xFF;  /* Index 1 = White on screen */
 
     int src_pages = (src_h + 7) / 8;
-    uint8_t *bmp = &frame_buf[8]; /* skip palette */
+    uint8_t *bmp = &frame_buf[8]; /* skip 8-byte palette header */
 
     for (int page = 0; page < src_pages; page++) {
         for (int col = 0; col < src_w; col++) {
@@ -85,7 +90,7 @@ static void decode_vertical_to_indexed1bit(const uint8_t *src, int src_w, int sr
                     px_y < 0 || px_y >= DISPLAY_HEIGHT)
                     continue;
 
-                /* Set pixel in horizontal row-major, MSB-first format */
+                /* Set bit to 1 (character outline / lit pixel) */
                 int byte_offset = px_y * HBUF_STRIDE + (px_x / 8);
                 int bit_pos = 7 - (px_x % 8);  /* MSB first */
                 bmp[byte_offset] |= (1 << bit_pos);
@@ -94,18 +99,42 @@ static void decode_vertical_to_indexed1bit(const uint8_t *src, int src_w, int sr
     }
 }
 
-/* ── Animation timer callback ──────────────────────────────────────── */
+/* ── Helper: Get active layer name ─────────────────────────────────── */
+static const char *get_active_layer_name(void) {
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    uint8_t layer = zmk_keymap_highest_layer_active();
+    const char *name = zmk_keymap_layer_name(layer);
+    if (name && strlen(name) > 0) {
+        return name;
+    }
+    switch (layer) {
+        case 0: return "BASE";
+        case 1: return "LOWER";
+        case 2: return "RAISE";
+        case 3: return "ADJUST";
+        default: return "LAYER";
+    }
+#else
+    return "RIGHT";
+#endif
+}
+
+/* ── Helper: Get battery level percentage ──────────────────────────── */
+static uint8_t get_battery_level(void) {
+#if __has_include(<zmk/battery.h>)
+    return zmk_battery_state_of_charge();
+#else
+    return 100;
+#endif
+}
+
+/* ── Animation & Widget Timer Callback ─────────────────────────────── */
 static void anim_timer_cb(lv_timer_t *timer) {
     (void)timer;
     step_counter++;
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    /* ── LEFT SIDE: Bongo Cat ───────────────────────────────────────────
-     * Sequence:
-     *   Steps 0..14  (15 ticks): Paw tapping (alternating left & right paw)
-     *   Steps 15..24 (10 ticks): Idle & looking around (cycling idle 0..4)
-     *   Steps 25..27 (3 ticks) : Prep stance
-     */
+    /* ── LEFT SIDE: Bongo Cat Animation ───────────────────────────── */
     uint32_t phase = step_counter % 28;
 
     if (phase < 15) {
@@ -119,20 +148,12 @@ static void anim_timer_cb(lv_timer_t *timer) {
         decode_vertical_to_indexed1bit(bongo_idle[idle_idx],
                                        DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else {
-        /* Ready / Prep stance */
+        /* Ready stance */
         decode_vertical_to_indexed1bit(bongo_prep,
                                        DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     }
 #else
-    /* ── RIGHT SIDE: Luna Pet ───────────────────────────────────────────
-     * Luna sprite is 32x22 pixels.
-     * Sequence:
-     *   Steps 0..11  (12 ticks): Sitting
-     *   Steps 12..23 (12 ticks): Walking
-     *   Steps 24..31 (8 ticks) : Barking
-     *   Steps 32..43 (12 ticks): Running
-     *   Steps 44..55 (12 ticks): Sneaking
-     */
+    /* ── RIGHT SIDE: Luna Pet Animation ───────────────────────────── */
     uint32_t phase = step_counter % 56;
     const uint8_t *sprite_frame;
 
@@ -154,15 +175,28 @@ static void anim_timer_cb(lv_timer_t *timer) {
     decode_vertical_to_indexed1bit(sprite_frame, 32, 22, luna_x, luna_y);
 #endif
 
-    /* Force LVGL to redraw the image widget */
+    /* Redraw animation frame */
     lv_img_set_src(img_widget, &frame_dsc);
+
+    /* Update Layer Name widget */
+    if (layer_label) {
+        lv_label_set_text(layer_label, get_active_layer_name());
+    }
+
+    /* Update Battery Status widget */
+    if (battery_label) {
+        char bat_buf[16];
+        snprintf(bat_buf, sizeof(bat_buf), "BAT %d%%", get_battery_level());
+        lv_label_set_text(battery_label, bat_buf);
+    }
 }
 
 /* ── ZMK Display Entry Point ───────────────────────────────────────── */
 lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
 
-    /* Render initial frame */
+    /* Initial frame decode */
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     decode_vertical_to_indexed1bit(bongo_tap[0],
                                    DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
@@ -174,12 +208,29 @@ lv_obj_t *zmk_display_status_screen(void) {
     }
 #endif
 
-    /* Create full-screen image widget to display animated frames */
+    /* 1. Base Image Widget for Animation */
     img_widget = lv_img_create(screen);
     lv_img_set_src(img_widget, &frame_dsc);
     lv_obj_align(img_widget, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    /* Start animation timer at ~180ms intervals */
+    /* 2. Layer Name Widget (Top Left) */
+    layer_label = lv_label_create(screen);
+    lv_obj_set_style_text_color(layer_label, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(layer_label, LV_OPA_TRANSP, 0);
+    lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
+    lv_label_set_text(layer_label, get_active_layer_name());
+
+    /* 3. Battery Status Widget (Top Right) */
+    battery_label = lv_label_create(screen);
+    lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(battery_label, LV_OPA_TRANSP, 0);
+    lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -2, 0);
+
+    char bat_buf[16];
+    snprintf(bat_buf, sizeof(bat_buf), "BAT %d%%", get_battery_level());
+    lv_label_set_text(battery_label, bat_buf);
+
+    /* Start animation & widget refresh timer */
     lv_timer_create(anim_timer_cb, ANIM_FRAME_DURATION_MS, NULL);
 
     return screen;
