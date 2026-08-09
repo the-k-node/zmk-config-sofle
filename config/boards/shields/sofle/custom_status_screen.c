@@ -1,20 +1,16 @@
 /*
  * Copyright (c) 2020 The ZMK Contributors
  * SPDX-License-Identifier: MIT
+ *
+ * Simple custom status screen with static Bongo Cat graphic.
+ * Works on both central and peripheral halves of a split keyboard.
  */
 
 #include <zephyr/kernel.h>
 #include <zmk/display.h>
-#include <zmk/events/wpm_state_changed.h>
-#include <zmk/events/layer_state_changed.h>
-#include <zmk/event_manager.h>
-#include <zmk/endpoints.h>
-#include <zmk/keymap.h>
-#include <zmk/wpm.h>
 #include <lvgl.h>
-#include <stdio.h>
 
-/* Bongo Cat 128x16 pixel art bitmap frame */
+/* Bongo Cat 128x16 pixel art bitmap */
 static const uint8_t bongo_cat_bits[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -44,55 +40,15 @@ static const lv_img_dsc_t bongo_cat_img = {
     .data = bongo_cat_bits,
 };
 
-static lv_obj_t *layer_label;
-static lv_obj_t *wpm_label;
-
-static void update_layer_label(void) {
-    if (!layer_label) return;
-    uint8_t layer = zmk_keymap_highest_layer_active();
-    switch (layer) {
-        case 0: lv_label_set_text(layer_label, "DEFAULT"); break;
-        case 1: lv_label_set_text(layer_label, "LOWER"); break;
-        case 2: lv_label_set_text(layer_label, "RAISE"); break;
-        case 3: lv_label_set_text(layer_label, "ADJUST"); break;
-        default: lv_label_set_text(layer_label, "CUSTOM"); break;
-    }
-}
-
-static void update_wpm_label(void) {
-    if (!wpm_label) return;
-    char buf[16];
-    snprintf(buf, sizeof(buf), "WPM: %d", zmk_wpm_get_state());
-    lv_label_set_text(wpm_label, buf);
-}
-
-static int layer_event_listener(const zmk_event_t *eh) {
-    update_layer_label();
-    return 0;
-}
-
-static int wpm_event_listener(const zmk_event_t *eh) {
-    update_wpm_label();
-    return 0;
-}
-
-ZMK_LISTENER(layer_status, layer_event_listener);
-ZMK_SUBSCRIPTION(layer_status, zmk_layer_state_changed);
-
-ZMK_LISTENER(wpm_status, wpm_event_listener);
-ZMK_SUBSCRIPTION(wpm_status, zmk_wpm_state_changed);
-
 lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
 
-    layer_label = lv_label_create(screen);
-    lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 2);
-    update_layer_label();
+    /* Title label */
+    lv_obj_t *title = lv_label_create(screen);
+    lv_label_set_text(title, "SOFLE");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
 
-    wpm_label = lv_label_create(screen);
-    lv_obj_align(wpm_label, LV_ALIGN_TOP_RIGHT, -2, 2);
-    update_wpm_label();
-
+    /* Bongo Cat image at bottom */
     lv_obj_t *bongo_obj = lv_img_create(screen);
     lv_img_set_src(bongo_obj, &bongo_cat_img);
     lv_obj_align(bongo_obj, LV_ALIGN_BOTTOM_MID, 0, 0);
