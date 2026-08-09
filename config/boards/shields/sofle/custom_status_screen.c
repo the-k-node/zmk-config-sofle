@@ -36,15 +36,26 @@
 
 static uint8_t frame_buf[HBUF_TOTAL_SIZE];
 
-/* ── LVGL image descriptor ─────────────────────────────────────────── */
-static lv_img_dsc_t frame_dsc = {
-    .header.cf = LV_IMG_CF_INDEXED_1BIT,
-    .header.always_zero = 0,
-    .header.reserved = 0,
-    .header.w = DISPLAY_WIDTH,
-    .header.h = DISPLAY_HEIGHT,
-    .data_size = HBUF_TOTAL_SIZE,
-    .data = frame_buf,
+/* ── LVGL image descriptors (Swapped to bypass cache) ──────────────── */
+static lv_img_dsc_t frame_dsc[2] = {
+    {
+        .header.cf = LV_IMG_CF_INDEXED_1BIT,
+        .header.always_zero = 0,
+        .header.reserved = 0,
+        .header.w = DISPLAY_WIDTH,
+        .header.h = DISPLAY_HEIGHT,
+        .data_size = HBUF_TOTAL_SIZE,
+        .data = frame_buf,
+    },
+    {
+        .header.cf = LV_IMG_CF_INDEXED_1BIT,
+        .header.always_zero = 0,
+        .header.reserved = 0,
+        .header.w = DISPLAY_WIDTH,
+        .header.h = DISPLAY_HEIGHT,
+        .data_size = HBUF_TOTAL_SIZE,
+        .data = frame_buf,
+    }
 };
 
 /* ── UI Widgets & State ────────────────────────────────────────────── */
@@ -161,10 +172,9 @@ static void anim_timer_cb(lv_timer_t *timer) {
     decode_vertical_to_indexed1bit(sprite_frame, 32, 22, luna_x, luna_y);
 #endif
 
-    /* Force LVGL image cache invalidation and redraw */
-    lv_img_cache_invalidate_src(&frame_dsc);
-    lv_img_set_src(img_widget, NULL);
-    lv_img_set_src(img_widget, &frame_dsc);
+    /* Force LVGL image update by swapping descriptor pointers */
+    uint8_t active_desc = step_counter % 2;
+    lv_img_set_src(img_widget, &frame_dsc[active_desc]);
 
     if (layer_label) {
         lv_label_set_text(layer_label, get_active_layer_name());
@@ -192,7 +202,7 @@ lv_obj_t *zmk_display_status_screen(void) {
 #endif
 
     img_widget = lv_img_create(screen);
-    lv_img_set_src(img_widget, &frame_dsc);
+    lv_img_set_src(img_widget, &frame_dsc[0]);
     lv_obj_align(img_widget, LV_ALIGN_TOP_LEFT, 0, 0);
 
     layer_label = lv_label_create(screen);
