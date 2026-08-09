@@ -7,15 +7,16 @@
 #include <zmk/display.h>
 #include <lvgl.h>
 
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 #include <zmk/display/widgets/battery_status.h>
 #include <zmk/display/widgets/layer_status.h>
 #include <zmk/display/widgets/output_status.h>
 #if IS_ENABLED(CONFIG_ZMK_WPM)
 #include <zmk/display/widgets/wpm_status.h>
 #endif
-
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 #include <zmk/keymap.h>
+#else
+#include <zmk/display/widgets/peripheral_status.h>
 #endif
 
 #include "bongo_cat.h"
@@ -131,11 +132,15 @@ static void screen_delete_cb(lv_event_t * e) {
 }
 
 /* ── ZMK Native Widgets ────────────────────────────────────────────── */
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 static struct zmk_widget_battery_status battery_widget;
 static struct zmk_widget_layer_status layer_widget;
 static struct zmk_widget_output_status output_widget;
 #if IS_ENABLED(CONFIG_ZMK_WPM)
 static struct zmk_widget_wpm_status wpm_widget;
+#endif
+#else
+static struct zmk_widget_peripheral_status peripheral_widget;
 #endif
 
 lv_obj_t *zmk_display_status_screen(void) {
@@ -158,14 +163,14 @@ lv_obj_t *zmk_display_status_screen(void) {
     /* Attach a deletion handler to prevent crash on sleep */
     lv_obj_add_event_cb(screen, screen_delete_cb, LV_EVENT_DELETE, NULL);
 
-    /* Initialize ZMK Native Widgets instead of custom labels */
+    /* Initialize ZMK Native Widgets */
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     zmk_widget_layer_status_init(&layer_widget, screen);
     lv_obj_align(zmk_widget_layer_status_obj(&layer_widget), LV_ALIGN_TOP_LEFT, 2, 0);
 
     zmk_widget_battery_status_init(&battery_widget, screen);
     lv_obj_align(zmk_widget_battery_status_obj(&battery_widget), LV_ALIGN_TOP_RIGHT, -2, 0);
 
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     zmk_widget_output_status_init(&output_widget, screen);
     lv_obj_align(zmk_widget_output_status_obj(&output_widget), LV_ALIGN_TOP_LEFT, 2, 12);
     
@@ -173,6 +178,9 @@ lv_obj_t *zmk_display_status_screen(void) {
     zmk_widget_wpm_status_init(&wpm_widget, screen);
     lv_obj_align(zmk_widget_wpm_status_obj(&wpm_widget), LV_ALIGN_BOTTOM_LEFT, 2, -2);
     #endif
+#else
+    zmk_widget_peripheral_status_init(&peripheral_widget, screen);
+    lv_obj_align(zmk_widget_peripheral_status_obj(&peripheral_widget), LV_ALIGN_TOP_LEFT, 2, 0);
 #endif
 
     /* Only create the timer once, or if it was destroyed */
