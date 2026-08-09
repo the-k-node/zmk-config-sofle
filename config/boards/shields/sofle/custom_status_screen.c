@@ -83,19 +83,19 @@ ZMK_LISTENER(wpm_status, wpm_event_listener);
 ZMK_SUBSCRIPTION(wpm_status, zmk_wpm_state_changed);
 
 lv_obj_t *zmk_display_status_screen(void) {
-    lv_obj_t *screen = lv_obj_create(NULL, NULL);
+    lv_obj_t *screen = lv_obj_create(NULL);
 
-    layer_label = lv_label_create(screen, NULL);
-    lv_obj_align(layer_label, NULL, LV_ALIGN_IN_TOP_LEFT, 2, 2);
+    layer_label = lv_label_create(screen);
+    lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 2);
     update_layer_label();
 
-    wpm_label = lv_label_create(screen, NULL);
-    lv_obj_align(wpm_label, NULL, LV_ALIGN_IN_TOP_RIGHT, -2, 2);
+    wpm_label = lv_label_create(screen);
+    lv_obj_align(wpm_label, LV_ALIGN_TOP_RIGHT, -2, 2);
     update_wpm_label();
 
-    lv_obj_t *bongo_obj = lv_img_create(screen, NULL);
+    lv_obj_t *bongo_obj = lv_img_create(screen);
     lv_img_set_src(bongo_obj, &bongo_cat_img);
-    lv_obj_align(bongo_obj, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, 0);
+    lv_obj_align(bongo_obj, LV_ALIGN_BOTTOM_MID, 0, 0);
 
     return screen;
 }
