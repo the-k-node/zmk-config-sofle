@@ -18,9 +18,9 @@
 #include "bongo_cat.h"
 #include "luna.h"
 
-/* The user requested a vertical tower orientation! */
-#define DISPLAY_WIDTH  32
-#define DISPLAY_HEIGHT 128
+/* Revert to native 128x32 to prevent driver corruption */
+#define DISPLAY_WIDTH  128
+#define DISPLAY_HEIGHT 32
 
 #define HBUF_STRIDE ((DISPLAY_WIDTH + 7) / 8)
 #define HBUF_DATA_SIZE (HBUF_STRIDE * DISPLAY_HEIGHT)
@@ -46,7 +46,7 @@ static void init_palette(void) {
 }
 
 static void draw_bitmap_to_buffer(const uint8_t *src, int src_w, int src_h,
-                                  int dst_offset_x, int dst_offset_y, bool rotate_90_cw) {
+                                  int dst_offset_x, int dst_offset_y) {
     uint8_t *bmp = &frame_buf[8];
     memset(bmp, 0xFF, HBUF_DATA_SIZE);
 
@@ -59,14 +59,8 @@ static void draw_bitmap_to_buffer(const uint8_t *src, int src_w, int src_h,
                 if (src_y >= src_h) break;
 
                 if (byte_val & (1 << bit)) {
-                    int px_x, px_y;
-                    if (rotate_90_cw) {
-                        px_x = dst_offset_x + ((src_h - 1) - src_y);
-                        px_y = dst_offset_y + col;
-                    } else {
-                        px_x = dst_offset_x + col;
-                        px_y = dst_offset_y + src_y;
-                    }
+                    int px_x = dst_offset_x + col;
+                    int px_y = dst_offset_y + src_y;
 
                     if (px_x >= 0 && px_x < DISPLAY_WIDTH &&
                         px_y >= 0 && px_y < DISPLAY_HEIGHT) {
@@ -90,14 +84,14 @@ static const char *get_active_layer_name(void) {
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     uint8_t layer = zmk_keymap_highest_layer_active();
     switch (layer) {
-        case 0: return "BAS";
-        case 1: return "LOW";
-        case 2: return "RSE";
-        case 3: return "ADJ";
-        default: return "LYR";
+        case 0: return "BASE";
+        case 1: return "LOWER";
+        case 2: return "RAISE";
+        case 3: return "ADJUST";
+        default: return "LAYER";
     }
 #else
-    return "PER";
+    return "PERIPHERAL";
 #endif
 }
 
@@ -110,18 +104,23 @@ static uint8_t get_battery_level(void) {
 }
 
 static void set_battery_label_text(lv_obj_t *label, uint8_t level) {
-    char bat_buf[6];
+    char bat_buf[10];
+    bat_buf[0] = 'B';
+    bat_buf[1] = 'A';
+    bat_buf[2] = 'T';
+    bat_buf[3] = ' ';
+    
     if (level >= 100) {
-        bat_buf[0] = '1';
-        bat_buf[1] = '0';
-        bat_buf[2] = '0';
-        bat_buf[3] = '%';
-        bat_buf[4] = '\0';
+        bat_buf[4] = '1';
+        bat_buf[5] = '0';
+        bat_buf[6] = '0';
+        bat_buf[7] = '%';
+        bat_buf[8] = '\0';
     } else {
-        bat_buf[0] = (level / 10) + '0';
-        bat_buf[1] = (level % 10) + '0';
-        bat_buf[2] = '%';
-        bat_buf[3] = '\0';
+        bat_buf[4] = (level / 10) + '0';
+        bat_buf[5] = (level % 10) + '0';
+        bat_buf[6] = '%';
+        bat_buf[7] = '\0';
     }
     lv_label_set_text(label, bat_buf);
 }
@@ -135,12 +134,12 @@ static void anim_timer_cb(lv_timer_t *timer) {
 
     if (phase < 15) {
         uint8_t tap_idx = phase % 2;
-        draw_bitmap_to_buffer(bongo_tap[tap_idx], 128, 32, 0, 0, true);
+        draw_bitmap_to_buffer(bongo_tap[tap_idx], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else if (phase < 25) {
         uint8_t idle_idx = (phase - 15) % 5;
-        draw_bitmap_to_buffer(bongo_idle[idle_idx], 128, 32, 0, 0, true);
+        draw_bitmap_to_buffer(bongo_idle[idle_idx], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else {
-        draw_bitmap_to_buffer(bongo_prep, 128, 32, 0, 0, true);
+        draw_bitmap_to_buffer(bongo_prep, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     }
 #else
     uint32_t phase = step_counter % 56;
@@ -158,9 +157,9 @@ static void anim_timer_cb(lv_timer_t *timer) {
         sprite_frame = luna_sneak[(phase - 44) % 2];
     }
 
-    int luna_x = 0;
+    int luna_x = (DISPLAY_WIDTH - 32) / 2;
     int luna_y = DISPLAY_HEIGHT - 22;
-    draw_bitmap_to_buffer(sprite_frame, 32, 22, luna_x, luna_y, false);
+    draw_bitmap_to_buffer(sprite_frame, 32, 22, luna_x, luna_y);
 #endif
 
     lv_img_cache_invalidate_src(&frame_dsc);
@@ -185,20 +184,15 @@ static void screen_delete_cb(lv_event_t * e) {
 }
 
 lv_obj_t *zmk_display_status_screen(void) {
-    lv_disp_t *disp = lv_disp_get_default();
-    if (disp != NULL) {
-        lv_disp_set_rotation(disp, LV_DISP_ROT_270);
-    }
-
     lv_obj_t *screen = lv_obj_create(NULL);
     init_palette();
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    draw_bitmap_to_buffer(bongo_tap[0], 128, 32, 0, 0, true);
+    draw_bitmap_to_buffer(bongo_tap[0], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
 #else
-    int luna_x = 0;
+    int luna_x = (DISPLAY_WIDTH - 32) / 2;
     int luna_y = DISPLAY_HEIGHT - 22;
-    draw_bitmap_to_buffer(luna_sit[0], 32, 22, luna_x, luna_y, false);
+    draw_bitmap_to_buffer(luna_sit[0], 32, 22, luna_x, luna_y);
 #endif
 
     img_widget = lv_img_create(screen);
@@ -207,12 +201,13 @@ lv_obj_t *zmk_display_status_screen(void) {
     
     lv_obj_add_event_cb(screen, screen_delete_cb, LV_EVENT_DELETE, NULL);
 
+    /* Text labels with solid background to prevent overlap garbling */
     layer_label = lv_label_create(screen);
     if (layer_label != NULL) {
         lv_label_set_text(layer_label, get_active_layer_name());
         lv_obj_set_style_bg_color(layer_label, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(layer_label, LV_OPA_COVER, 0);
-        lv_obj_align(layer_label, LV_ALIGN_TOP_MID, 0, 2);
+        lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
     }
 
     battery_label = lv_label_create(screen);
@@ -220,7 +215,9 @@ lv_obj_t *zmk_display_status_screen(void) {
         set_battery_label_text(battery_label, get_battery_level());
         lv_obj_set_style_bg_color(battery_label, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(battery_label, LV_OPA_COVER, 0);
-        lv_obj_align(battery_label, LV_ALIGN_TOP_MID, 0, 16);
+        
+        /* Moved down to bottom right to avoid overlapping Bongo Cat's head/arms */
+        lv_obj_align(battery_label, LV_ALIGN_BOTTOM_RIGHT, -2, 0);
     }
 
     static lv_timer_t * anim_timer = NULL;
