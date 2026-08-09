@@ -104,6 +104,29 @@ static uint8_t get_battery_level(void) {
 #endif
 }
 
+/* Stack-safe battery formatter to prevent snprintf stack overflows */
+static void set_battery_label_text(lv_obj_t *label, uint8_t level) {
+    char bat_buf[10];
+    bat_buf[0] = 'B';
+    bat_buf[1] = 'A';
+    bat_buf[2] = 'T';
+    bat_buf[3] = ' ';
+    
+    if (level >= 100) {
+        bat_buf[4] = '1';
+        bat_buf[5] = '0';
+        bat_buf[6] = '0';
+        bat_buf[7] = '%';
+        bat_buf[8] = '\0';
+    } else {
+        bat_buf[4] = (level / 10) + '0';
+        bat_buf[5] = (level % 10) + '0';
+        bat_buf[6] = '%';
+        bat_buf[7] = '\0';
+    }
+    lv_label_set_text(label, bat_buf);
+}
+
 static void anim_timer_cb(lv_timer_t *timer) {
     (void)timer;
     step_counter++;
@@ -154,9 +177,7 @@ static void anim_timer_cb(lv_timer_t *timer) {
 
     if (battery_label != NULL) {
         if (step_counter % 20 == 0) {
-            char bat_buf[16];
-            snprintf(bat_buf, sizeof(bat_buf), "BAT %d%%", get_battery_level());
-            lv_label_set_text(battery_label, bat_buf);
+            set_battery_label_text(battery_label, get_battery_level());
         }
     }
 }
@@ -194,9 +215,7 @@ lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
 
     battery_label = lv_label_create(screen);
-    char bat_buf[16];
-    snprintf(bat_buf, sizeof(bat_buf), "BAT %d%%", get_battery_level());
-    lv_label_set_text(battery_label, bat_buf);
+    set_battery_label_text(battery_label, get_battery_level());
     lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -2, 0);
 
     /* Only create the timer once, or if it was destroyed */
