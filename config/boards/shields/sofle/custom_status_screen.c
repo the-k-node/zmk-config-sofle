@@ -27,30 +27,53 @@
 #define DISPLAY_HEIGHT 32
 #define ANIM_FRAME_DURATION_MS 180
 
+/* ── Frame buffer for decoded horizontal-scan bitmap ───────────────── */
+#define HBUF_STRIDE ((DISPLAY_WIDTH + 7) / 8)
+#define HBUF_DATA_SIZE (HBUF_STRIDE * DISPLAY_HEIGHT)
+#define HBUF_TOTAL_SIZE (8 + HBUF_DATA_SIZE)
+
+/* Must be aligned for LVGL to safely cast it internally */
+static uint8_t frame_buf[HBUF_TOTAL_SIZE] __attribute__((aligned(4)));
+
+/* ── LVGL image descriptor ─────────────────────────────────────────── */
+static lv_img_dsc_t frame_dsc = {
+    .header.cf = LV_IMG_CF_INDEXED_1BIT,
+    .header.always_zero = 0,
+    .header.reserved = 0,
+    .header.w = DISPLAY_WIDTH,
+    .header.h = DISPLAY_HEIGHT,
+    .data_size = HBUF_TOTAL_SIZE,
+    .data = frame_buf,
+};
+
 /* ── UI Widgets & State ────────────────────────────────────────────── */
 static uint32_t step_counter = 0;
-static lv_obj_t *canvas_widget = NULL;
+static lv_obj_t *img_widget = NULL;
 static lv_obj_t *layer_label = NULL;
 static lv_obj_t *battery_label = NULL;
 
-/* In LVGL 7, 1-bit indexed canvas requires this buffer size macro */
-#define CANVAS_BUF_SIZE LV_CANVAS_BUF_SIZE_INDEXED_1BIT(DISPLAY_WIDTH, DISPLAY_HEIGHT)
-static uint8_t canvas_buf[CANVAS_BUF_SIZE];
+/*
+ * Initialize the palette for the 1-bit indexed image.
+ */
+static void init_palette(void) {
+    /* Color 0: Black (Background) */
+    frame_buf[0] = 0x00; frame_buf[1] = 0x00; frame_buf[2] = 0x00; frame_buf[3] = 0xFF;
+    /* Color 1: White (Foreground) */
+    frame_buf[4] = 0xFF; frame_buf[5] = 0xFF; frame_buf[6] = 0xFF; frame_buf[7] = 0xFF;
+}
 
 /*
- * Draw a vertical-scan QMK bitmap directly onto the LVGL canvas
+ * Draw a vertical-scan QMK bitmap into the indexed image buffer
  */
-static void draw_bitmap_to_canvas(const uint8_t *src, int src_w, int src_h,
+static void draw_bitmap_to_buffer(const uint8_t *src, int src_w, int src_h,
                                   int dst_offset_x, int dst_offset_y) {
     /* 
-     * COUNTER-INTUITIVE COLOR MAPPING:
-     * ZMK defaults to a "Light" theme in LVGL (Background = White, Text = Black).
-     * However, the Sofle OLED has `inversion-on` set in hardware.
-     * This means White (in LVGL) becomes Dark (on physical screen), 
-     * and Black (in LVGL) becomes Lit (on physical screen).
-     * Therefore, to get a Dark background, we MUST fill with White.
+     * Fill ONLY the pixel data (skip the 8-byte palette) with 1s (Color 1 / White).
+     * Because ZMK defaults to a Light theme and the hardware has `inversion-on`,
+     * White pixels in the buffer will render as DARK physically.
      */
-    lv_canvas_fill_bg(canvas_widget, lv_color_white(), LV_OPA_COVER);
+    uint8_t *bmp = &frame_buf[8];
+    memset(bmp, 0xFF, HBUF_DATA_SIZE);
 
     int src_pages = (src_h + 7) / 8;
     
@@ -68,8 +91,13 @@ static void draw_bitmap_to_canvas(const uint8_t *src, int src_w, int src_h,
 
                     if (px_x >= 0 && px_x < DISPLAY_WIDTH &&
                         px_y >= 0 && px_y < DISPLAY_HEIGHT) {
-                        /* Draw characters in Black (which becomes Lit on screen) */
-                        lv_canvas_set_px(canvas_widget, px_x, px_y, lv_color_black());
+                        /* 
+                         * Set the pixel bit to 0 (Color 0 / Black).
+                         * Black pixels in the buffer will render as LIT physically.
+                         */
+                        int byte_offset = px_y * HBUF_STRIDE + (px_x / 8);
+                        int bit_pos = 7 - (px_x % 8);
+                        bmp[byte_offset] &= ~(1 << bit_pos);
                     }
                 }
             }
@@ -116,12 +144,12 @@ static void anim_timer_cb(lv_timer_t *timer) {
 
     if (phase < 15) {
         uint8_t tap_idx = phase % 2;
-        draw_bitmap_to_canvas(bongo_tap[tap_idx], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+        draw_bitmap_to_buffer(bongo_tap[tap_idx], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else if (phase < 25) {
         uint8_t idle_idx = (phase - 15) % 5;
-        draw_bitmap_to_canvas(bongo_idle[idle_idx], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+        draw_bitmap_to_buffer(bongo_idle[idle_idx], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else {
-        draw_bitmap_to_canvas(bongo_prep, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+        draw_bitmap_to_buffer(bongo_prep, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     }
 #else
     uint32_t phase = step_counter % 56;
@@ -142,11 +170,12 @@ static void anim_timer_cb(lv_timer_t *timer) {
     int luna_x = (DISPLAY_WIDTH - 32) / 2;
     int luna_y = DISPLAY_HEIGHT - 22;
 
-    draw_bitmap_to_canvas(sprite_frame, 32, 22, luna_x, luna_y);
+    draw_bitmap_to_buffer(sprite_frame, 32, 22, luna_x, luna_y);
 #endif
 
     /* Force redraw */
-    lv_obj_invalidate(canvas_widget);
+    lv_img_cache_invalidate_src(&frame_dsc);
+    lv_obj_invalidate(img_widget);
 
     if (layer_label) {
         lv_label_set_text(layer_label, get_active_layer_name());
@@ -163,26 +192,22 @@ static void anim_timer_cb(lv_timer_t *timer) {
 lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
 
-    /* Initialize Canvas */
-    canvas_widget = lv_canvas_create(screen);
-    lv_canvas_set_buffer(canvas_widget, canvas_buf, DISPLAY_WIDTH, DISPLAY_HEIGHT, LV_IMG_CF_INDEXED_1BIT);
-    
-    /* ZMK monochrome theme defaults: 0 is black (bg), 1 is white (fg) */
-    lv_canvas_set_palette(canvas_widget, 0, lv_color_black());
-    lv_canvas_set_palette(canvas_widget, 1, lv_color_white());
-    lv_obj_align(canvas_widget, LV_ALIGN_TOP_LEFT, 0, 0);
+    init_palette();
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    draw_bitmap_to_canvas(bongo_tap[0], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+    draw_bitmap_to_buffer(bongo_tap[0], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
 #else
     {
         int luna_x = (DISPLAY_WIDTH - 32) / 2;
         int luna_y = DISPLAY_HEIGHT - 22;
-        draw_bitmap_to_canvas(luna_sit[0], 32, 22, luna_x, luna_y);
+        draw_bitmap_to_buffer(luna_sit[0], 32, 22, luna_x, luna_y);
     }
 #endif
 
-    /* Initialize labels */
+    img_widget = lv_img_create(screen);
+    lv_img_set_src(img_widget, &frame_dsc);
+    lv_obj_align(img_widget, LV_ALIGN_TOP_LEFT, 0, 0);
+
     layer_label = lv_label_create(screen);
     lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
     lv_label_set_text(layer_label, get_active_layer_name());
