@@ -18,21 +18,15 @@
 #include "bongo_cat.h"
 #include "luna.h"
 
-/* The physical dimensions of the vertical tower */
-#define TOWER_WIDTH  32
-#define TOWER_HEIGHT 128
-
-/* The native hardware driver dimensions (must not be changed to prevent corruption) */
+/* Revert to native 128x32 to prevent driver corruption and cropping */
 #define DISPLAY_WIDTH  128
 #define DISPLAY_HEIGHT 32
 
-/* Canvas buffer for composing the upright tower image */
-static uint8_t canvas_buf[LV_CANVAS_BUF_SIZE_INDEXED_1BIT(TOWER_WIDTH, TOWER_HEIGHT)] __attribute__((aligned(4)));
-
-/* The final rotated buffer that Zephyr driver accepts */
 #define HBUF_STRIDE ((DISPLAY_WIDTH + 7) / 8)
 #define HBUF_DATA_SIZE (HBUF_STRIDE * DISPLAY_HEIGHT)
 #define HBUF_TOTAL_SIZE (8 + HBUF_DATA_SIZE)
+
+/* 32-bit aligned buffer */
 static uint8_t frame_buf[HBUF_TOTAL_SIZE] __attribute__((aligned(4)));
 
 static lv_img_dsc_t frame_dsc = {
@@ -45,82 +39,37 @@ static lv_img_dsc_t frame_dsc = {
     .data = frame_buf,
 };
 
-static void init_frame_palette(void) {
+static void init_palette(void) {
     /* Color 0: Black, Color 1: White */
     frame_buf[0] = 0x00; frame_buf[1] = 0x00; frame_buf[2] = 0x00; frame_buf[3] = 0xFF;
     frame_buf[4] = 0xFF; frame_buf[5] = 0xFF; frame_buf[6] = 0xFF; frame_buf[7] = 0xFF;
 }
 
-static void draw_bongo_to_canvas(const uint8_t *src) {
-    int offset_y = TOWER_HEIGHT - 32; // Put Bongo Cat at bottom
-    int start_col = 32; // Crop to the center 32 pixels (his face and paws)
-    
-    for (int page = 0; page < 4; page++) {
-        for (int col = 0; col < 32; col++) {
-            int src_col = start_col + col;
-            uint8_t byte_val = src[src_col + page * 128];
+static void draw_bitmap_to_buffer(const uint8_t *src, int src_w, int src_h,
+                                  int dst_offset_x, int dst_offset_y) {
+    uint8_t *bmp = &frame_buf[8];
+    memset(bmp, 0xFF, HBUF_DATA_SIZE);
+
+    int src_pages = (src_h + 7) / 8;
+    for (int page = 0; page < src_pages; page++) {
+        for (int col = 0; col < src_w; col++) {
+            uint8_t byte_val = src[col + page * src_w];
             for (int bit = 0; bit < 8; bit++) {
                 int src_y = page * 8 + bit;
+                if (src_y >= src_h) break;
+
                 if (byte_val & (1 << bit)) {
-                    // Draw upright! No transposing!
-                    int t_x = col;
-                    int t_y = offset_y + src_y;
-                    
-                    int byte_idx = 8 + t_y * 4 + (t_x / 8);
-                    int bit_idx = 7 - (t_x % 8);
-                    canvas_buf[byte_idx] |= (1 << bit_idx); // Set to White (1)
+                    int px_x = dst_offset_x + col;
+                    int px_y = dst_offset_y + src_y;
+
+                    if (px_x >= 0 && px_x < DISPLAY_WIDTH &&
+                        px_y >= 0 && px_y < DISPLAY_HEIGHT) {
+                        /* Set to 0 (Black) which hardware inverts to Lit */
+                        int byte_offset = px_y * HBUF_STRIDE + (px_x / 8);
+                        int bit_pos = 7 - (px_x % 8);
+                        bmp[byte_offset] &= ~(1 << bit_pos);
+                    }
                 }
-            }
-        }
-    }
-}
-
-static void draw_luna_to_canvas(const uint8_t *src) {
-    int offset_y = TOWER_HEIGHT - 22; // Put Luna at bottom of tower
-    for (int page = 0; page < 3; page++) {
-        for (int col = 0; col < 32; col++) {
-            uint8_t byte_val = src[col + page * 32];
-            for (int bit = 0; bit < 8; bit++) {
-                int src_y = page * 8 + bit;
-                if (src_y >= 22) break;
-                
-                if (byte_val & (1 << bit)) {
-                    int t_x = col;
-                    int t_y = offset_y + src_y;
-                    
-                    int byte_idx = 8 + t_y * 4 + (t_x / 8);
-                    int bit_idx = 7 - (t_x % 8);
-                    canvas_buf[byte_idx] |= (1 << bit_idx); // Set to White (1)
-                }
-            }
-        }
-    }
-}
-
-static void rotate_canvas_to_frame(void) {
-    // Fill hardware buffer with 1s (Hardware Unlit/Black)
-    memset(&frame_buf[8], 0xFF, HBUF_DATA_SIZE);
-
-    for (int t_y = 0; t_y < TOWER_HEIGHT; t_y++) {
-        for (int t_x = 0; t_x < TOWER_WIDTH; t_x++) {
-            int src_byte = 8 + t_y * 4 + (t_x / 8);
-            int src_bit = 7 - (t_x % 8);
-            int px_is_white = (canvas_buf[src_byte] >> src_bit) & 1;
-
-            if (px_is_white) {
-                // Rotate 90 CCW to map tower to hardware
-                int hw_x = t_y;
-                int hw_y = 31 - t_x;
-
-                // Alternate rotation if screen is upside down:
-                // int hw_x = 127 - t_y;
-                // int hw_y = t_x;
-
-                int dst_byte = 8 + hw_y * HBUF_STRIDE + (hw_x / 8);
-                int dst_bit = 7 - (hw_x % 8);
-                
-                // Clear bit to 0 (Hardware Lit/White)
-                frame_buf[dst_byte] &= ~(1 << dst_bit);
             }
         }
     }
@@ -128,20 +77,21 @@ static void rotate_canvas_to_frame(void) {
 
 static uint32_t step_counter = 0;
 static lv_obj_t *img_widget = NULL;
-static lv_obj_t *canvas_widget = NULL;
+static lv_obj_t *layer_label = NULL;
+static lv_obj_t *battery_label = NULL;
 
 static const char *get_active_layer_name(void) {
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     uint8_t layer = zmk_keymap_highest_layer_active();
     switch (layer) {
         case 0: return "BASE";
-        case 1: return "LOW";
-        case 2: return "RSE";
-        case 3: return "ADJ";
-        default: return "LYR";
+        case 1: return "LOWER";
+        case 2: return "RAISE";
+        case 3: return "ADJUST";
+        default: return "LAYER";
     }
 #else
-    return "PER";
+    return "PERIPHERAL";
 #endif
 }
 
@@ -153,54 +103,44 @@ static uint8_t get_battery_level(void) {
 #endif
 }
 
-static void fill_battery_buf(char *bat_buf, uint8_t level) {
+static void set_battery_label_text(lv_obj_t *label, uint8_t level) {
+    char bat_buf[6];
+    
     if (level >= 100) {
-        bat_buf[0] = '1'; bat_buf[1] = '0'; bat_buf[2] = '0'; bat_buf[3] = '%'; bat_buf[4] = '\0';
+        bat_buf[0] = '1';
+        bat_buf[1] = '0';
+        bat_buf[2] = '0';
+        bat_buf[3] = '%';
+        bat_buf[4] = '\0';
     } else {
-        bat_buf[0] = (level / 10) + '0'; bat_buf[1] = (level % 10) + '0'; bat_buf[2] = '%'; bat_buf[3] = '\0';
+        bat_buf[0] = (level / 10) + '0';
+        bat_buf[1] = (level % 10) + '0';
+        bat_buf[2] = '%';
+        bat_buf[3] = '\0';
     }
+    lv_label_set_text(label, bat_buf);
 }
 
 static void anim_timer_cb(lv_timer_t *timer) {
     (void)timer;
     step_counter++;
 
-    // 1. Clear the canvas to black
-    lv_canvas_fill_bg(canvas_widget, lv_color_black(), LV_OPA_COVER);
-
-    // 2. Draw text using canvas (upright on tower!)
-    lv_draw_label_dsc_t label_dsc;
-    lv_draw_label_dsc_init(&label_dsc);
-    label_dsc.color = lv_color_white();
-    label_dsc.font = lv_obj_get_style_text_font(img_widget, LV_PART_MAIN);
-    label_dsc.align = LV_TEXT_ALIGN_CENTER;
-
-    char bat_buf[6];
-    fill_battery_buf(bat_buf, get_battery_level());
-
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    lv_canvas_draw_text(canvas_widget, 0, 0, TOWER_WIDTH, &label_dsc, get_active_layer_name());
-    // Draw battery above Bongo Cat (y=80)
-    lv_canvas_draw_text(canvas_widget, 0, 80, TOWER_WIDTH, &label_dsc, bat_buf);
-#else
-    // Luna is at the bottom (y=106), so text goes at the top
-    lv_canvas_draw_text(canvas_widget, 0, 0, TOWER_WIDTH, &label_dsc, "PER");
-    lv_canvas_draw_text(canvas_widget, 0, 14, TOWER_WIDTH, &label_dsc, bat_buf);
-#endif
-
-    // 3. Draw animations onto the upright canvas
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     uint32_t phase = step_counter % 28;
+
     if (phase < 15) {
-        draw_bongo_to_canvas(bongo_tap[phase % 2]);
+        uint8_t tap_idx = phase % 2;
+        draw_bitmap_to_buffer(bongo_tap[tap_idx], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else if (phase < 25) {
-        draw_bongo_to_canvas(bongo_idle[(phase - 15) % 5]);
+        uint8_t idle_idx = (phase - 15) % 5;
+        draw_bitmap_to_buffer(bongo_idle[idle_idx], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     } else {
-        draw_bongo_to_canvas(bongo_prep);
+        draw_bitmap_to_buffer(bongo_prep, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
     }
 #else
     uint32_t phase = step_counter % 56;
     const uint8_t *sprite_frame;
+
     if (phase < 12) {
         sprite_frame = luna_sit[phase % 2];
     } else if (phase < 24) {
@@ -212,46 +152,68 @@ static void anim_timer_cb(lv_timer_t *timer) {
     } else {
         sprite_frame = luna_sneak[(phase - 44) % 2];
     }
-    draw_luna_to_canvas(sprite_frame);
+
+    int luna_x = (DISPLAY_WIDTH - 32) / 2;
+    int luna_y = DISPLAY_HEIGHT - 22;
+    draw_bitmap_to_buffer(sprite_frame, 32, 22, luna_x, luna_y);
 #endif
 
-    // 4. Translate 32x128 canvas into 128x32 hardware frame
-    rotate_canvas_to_frame();
-
-    // 5. Tell LVGL to repaint the hardware frame
     lv_img_cache_invalidate_src(&frame_dsc);
     if (img_widget != NULL) {
         lv_obj_invalidate(img_widget);
+    }
+
+    if (layer_label != NULL) {
+        lv_label_set_text(layer_label, get_active_layer_name());
+    }
+    if (battery_label != NULL) {
+        if (step_counter % 20 == 0) {
+            set_battery_label_text(battery_label, get_battery_level());
+        }
     }
 }
 
 static void screen_delete_cb(lv_event_t * e) {
     img_widget = NULL;
-    canvas_widget = NULL;
+    layer_label = NULL;
+    battery_label = NULL;
 }
 
 lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
-    init_frame_palette();
+    init_palette();
 
-    // Create a hidden canvas for composing the upright 32x128 tower
-    canvas_widget = lv_canvas_create(screen);
-    lv_canvas_set_buffer(canvas_widget, canvas_buf, TOWER_WIDTH, TOWER_HEIGHT, LV_IMG_CF_INDEXED_1BIT);
-    lv_canvas_set_palette(canvas_widget, 0, lv_color_black());
-    lv_canvas_set_palette(canvas_widget, 1, lv_color_white());
-    lv_obj_add_flag(canvas_widget, LV_OBJ_FLAG_HIDDEN); // Hidden! It only renders into canvas_buf.
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    draw_bitmap_to_buffer(bongo_tap[0], DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, 0);
+#else
+    int luna_x = (DISPLAY_WIDTH - 32) / 2;
+    int luna_y = DISPLAY_HEIGHT - 22;
+    draw_bitmap_to_buffer(luna_sit[0], 32, 22, luna_x, luna_y);
+#endif
 
-    // Create the image widget that actually talks to the screen hardware (128x32)
     img_widget = lv_img_create(screen);
     lv_img_set_src(img_widget, &frame_dsc);
     lv_obj_align(img_widget, LV_ALIGN_TOP_LEFT, 0, 0);
     
     lv_obj_add_event_cb(screen, screen_delete_cb, LV_EVENT_DELETE, NULL);
 
+    /* Text labels without solid background to prevent white bars */
+    layer_label = lv_label_create(screen);
+    if (layer_label != NULL) {
+        lv_label_set_text(layer_label, get_active_layer_name());
+        lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
+    }
+
+    battery_label = lv_label_create(screen);
+    if (battery_label != NULL) {
+        set_battery_label_text(battery_label, get_battery_level());
+        
+        /* Moved down to bottom right to avoid overlapping Bongo Cat's head/arms */
+        lv_obj_align(battery_label, LV_ALIGN_BOTTOM_RIGHT, -2, 0);
+    }
+
     static lv_timer_t * anim_timer = NULL;
     if (anim_timer == NULL) {
-        // Kick off the first frame
-        anim_timer_cb(NULL);
         anim_timer = lv_timer_create(anim_timer_cb, 180, NULL);
     }
     
