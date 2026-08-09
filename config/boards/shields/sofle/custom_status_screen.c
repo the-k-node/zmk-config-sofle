@@ -42,8 +42,15 @@ static uint8_t canvas_buf[CANVAS_BUF_SIZE];
  */
 static void draw_bitmap_to_canvas(const uint8_t *src, int src_w, int src_h,
                                   int dst_offset_x, int dst_offset_y) {
-    /* Fill canvas with background color */
-    lv_canvas_fill_bg(canvas_widget, lv_color_black(), LV_OPA_COVER);
+    /* 
+     * COUNTER-INTUITIVE COLOR MAPPING:
+     * ZMK defaults to a "Light" theme in LVGL (Background = White, Text = Black).
+     * However, the Sofle OLED has `inversion-on` set in hardware.
+     * This means White (in LVGL) becomes Dark (on physical screen), 
+     * and Black (in LVGL) becomes Lit (on physical screen).
+     * Therefore, to get a Dark background, we MUST fill with White.
+     */
+    lv_canvas_fill_bg(canvas_widget, lv_color_white(), LV_OPA_COVER);
 
     int src_pages = (src_h + 7) / 8;
     
@@ -61,7 +68,8 @@ static void draw_bitmap_to_canvas(const uint8_t *src, int src_w, int src_h,
 
                     if (px_x >= 0 && px_x < DISPLAY_WIDTH &&
                         px_y >= 0 && px_y < DISPLAY_HEIGHT) {
-                        lv_canvas_set_px(canvas_widget, px_x, px_y, lv_color_white());
+                        /* Draw characters in Black (which becomes Lit on screen) */
+                        lv_canvas_set_px(canvas_widget, px_x, px_y, lv_color_black());
                     }
                 }
             }
