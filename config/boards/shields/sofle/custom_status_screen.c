@@ -52,15 +52,19 @@ static void init_frame_palette(void) {
 }
 
 static void draw_bongo_to_canvas(const uint8_t *src) {
+    int offset_y = TOWER_HEIGHT - 32; // Put Bongo Cat at bottom
+    int start_col = 32; // Crop to the center 32 pixels (his face and paws)
+    
     for (int page = 0; page < 4; page++) {
-        for (int col = 0; col < 128; col++) {
-            uint8_t byte_val = src[col + page * 128];
+        for (int col = 0; col < 32; col++) {
+            int src_col = start_col + col;
+            uint8_t byte_val = src[src_col + page * 128];
             for (int bit = 0; bit < 8; bit++) {
                 int src_y = page * 8 + bit;
                 if (byte_val & (1 << bit)) {
-                    // Transpose bongo cat to fit upright on tower
-                    int t_x = src_y;
-                    int t_y = col;
+                    // Draw upright! No transposing!
+                    int t_x = col;
+                    int t_y = offset_y + src_y;
                     
                     int byte_idx = 8 + t_y * 4 + (t_x / 8);
                     int bit_idx = 7 - (t_x % 8);
@@ -176,8 +180,8 @@ static void anim_timer_cb(lv_timer_t *timer) {
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     lv_canvas_draw_text(canvas_widget, 0, 0, TOWER_WIDTH, &label_dsc, get_active_layer_name());
-    // Draw battery in the empty space below Bongo Cat (y=112)
-    lv_canvas_draw_text(canvas_widget, 0, 112, TOWER_WIDTH, &label_dsc, bat_buf);
+    // Draw battery above Bongo Cat (y=80)
+    lv_canvas_draw_text(canvas_widget, 0, 80, TOWER_WIDTH, &label_dsc, bat_buf);
 #else
     // Luna is at the bottom (y=106), so text goes at the top
     lv_canvas_draw_text(canvas_widget, 0, 0, TOWER_WIDTH, &label_dsc, "PER");
