@@ -7,12 +7,15 @@
 #include <zmk/display.h>
 #include <lvgl.h>
 
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-#include <zmk/keymap.h>
+#include <zmk/display/widgets/battery_status.h>
+#include <zmk/display/widgets/layer_status.h>
+#include <zmk/display/widgets/output_status.h>
+#if IS_ENABLED(CONFIG_ZMK_WPM)
+#include <zmk/display/widgets/wpm_status.h>
 #endif
 
-#if __has_include(<zmk/battery.h>)
-#include <zmk/battery.h>
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#include <zmk/keymap.h>
 #endif
 
 #include "bongo_cat.h"
@@ -77,35 +80,6 @@ static void draw_bitmap_to_buffer(const uint8_t *src, int src_w, int src_h,
 
 static uint32_t step_counter = 0;
 static lv_obj_t *img_widget = NULL;
-static lv_obj_t *layer_label = NULL;
-static lv_obj_t *battery_label = NULL;
-
-static const char *get_active_layer_name(void) {
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    uint8_t layer = zmk_keymap_highest_layer_active();
-    const char *name = zmk_keymap_layer_name(layer);
-    if (name && strlen(name) > 0) {
-        return name;
-    }
-    switch (layer) {
-        case 0: return "BASE";
-        case 1: return "LOWER";
-        case 2: return "RAISE";
-        case 3: return "ADJUST";
-        default: return "LAYER";
-    }
-#else
-    return "PERIPHERAL";
-#endif
-}
-
-static uint8_t get_battery_level(void) {
-#if __has_include(<zmk/battery.h>)
-    return zmk_battery_state_of_charge();
-#else
-    return 100;
-#endif
-}
 
 static void anim_timer_cb(lv_timer_t *timer) {
     (void)timer;
@@ -149,28 +123,20 @@ static void anim_timer_cb(lv_timer_t *timer) {
     if (img_widget != NULL) {
         lv_obj_invalidate(img_widget);
     }
-
-    /* Update labels */
-    if (layer_label != NULL) {
-        lv_label_set_text(layer_label, get_active_layer_name());
-    }
-
-    if (battery_label != NULL) {
-        /* Only update battery every few ticks to save CPU */
-        if (step_counter % 10 == 0) {
-            char bat_buf[16];
-            snprintf(bat_buf, sizeof(bat_buf), "BAT %d%%", get_battery_level());
-            lv_label_set_text(battery_label, bat_buf);
-        }
-    }
 }
 
 static void screen_delete_cb(lv_event_t * e) {
-    /* When ZMK destroys the screen (e.g. going to sleep), prevent dangling pointers */
+    /* When ZMK destroys the screen (e.g. going to sleep), prevent dangling pointer */
     img_widget = NULL;
-    layer_label = NULL;
-    battery_label = NULL;
 }
+
+/* ── ZMK Native Widgets ────────────────────────────────────────────── */
+static struct zmk_widget_battery_status battery_widget;
+static struct zmk_widget_layer_status layer_widget;
+static struct zmk_widget_output_status output_widget;
+#if IS_ENABLED(CONFIG_ZMK_WPM)
+static struct zmk_widget_wpm_status wpm_widget;
+#endif
 
 lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_t *screen = lv_obj_create(NULL);
@@ -192,15 +158,22 @@ lv_obj_t *zmk_display_status_screen(void) {
     /* Attach a deletion handler to prevent crash on sleep */
     lv_obj_add_event_cb(screen, screen_delete_cb, LV_EVENT_DELETE, NULL);
 
-    layer_label = lv_label_create(screen);
-    lv_label_set_text(layer_label, get_active_layer_name());
-    lv_obj_align(layer_label, LV_ALIGN_TOP_LEFT, 2, 0);
+    /* Initialize ZMK Native Widgets instead of custom labels */
+    zmk_widget_layer_status_init(&layer_widget, screen);
+    lv_obj_align(zmk_widget_layer_status_obj(&layer_widget), LV_ALIGN_TOP_LEFT, 2, 0);
+
+    zmk_widget_battery_status_init(&battery_widget, screen);
+    lv_obj_align(zmk_widget_battery_status_obj(&battery_widget), LV_ALIGN_TOP_RIGHT, -2, 0);
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    zmk_widget_output_status_init(&output_widget, screen);
+    lv_obj_align(zmk_widget_output_status_obj(&output_widget), LV_ALIGN_TOP_LEFT, 2, 12);
     
-    battery_label = lv_label_create(screen);
-    char bat_buf[16];
-    snprintf(bat_buf, sizeof(bat_buf), "BAT %d%%", get_battery_level());
-    lv_label_set_text(battery_label, bat_buf);
-    lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -2, 0);
+    #if IS_ENABLED(CONFIG_ZMK_WPM)
+    zmk_widget_wpm_status_init(&wpm_widget, screen);
+    lv_obj_align(zmk_widget_wpm_status_obj(&wpm_widget), LV_ALIGN_BOTTOM_LEFT, 2, -2);
+    #endif
+#endif
 
     /* Only create the timer once, or if it was destroyed */
     static lv_timer_t * anim_timer = NULL;
